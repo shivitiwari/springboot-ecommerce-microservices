@@ -115,7 +115,7 @@ public class ProductServiceImpl implements ProductService {
     @Override
     @Cacheable(value = "productSearch", key = "#query + '-' + #pageable.pageNumber")
     public Page<ProductResponse> searchProducts(String query, Pageable pageable) {
-        return productRepository.findByNameContainingIgnoreCaseOrDescriptionContainingIgnoreCase(query, query, pageable)
+        return productRepository.searchProducts(query, pageable)
                 .map(this::mapToResponse);
     }
 }

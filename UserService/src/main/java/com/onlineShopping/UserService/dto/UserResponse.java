@@ -16,7 +16,7 @@ public class UserResponse {
     private String role;
 
     // Alias for Order Service compatibility
-    public String getName() {
-        return username;
-    }
+//    public String getName() {
+//        return username;
+//    }
 }

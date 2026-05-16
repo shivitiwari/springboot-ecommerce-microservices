@@ -87,9 +87,30 @@ public class FilterConfig {
                         .uri("lb://USER-SERVICE"))
 
                 // ─────────────────────────────────────────────────────────────
-                // ROUTE 4a: Product Service — Public READ (NO JWT)
-                // Gateway : GET /api/products/**  or  GET /api/products
-                // Service : GET /products/**      or  GET /products
+                // ROUTE 4a-ROOT: Product Service — Public READ on exact root path (NO JWT)
+                // Gateway : GET /api/products          (no trailing slash, no sub-path)
+                // Service : GET /products              (exact — avoids trailing slash issue)
+                //
+                // WHY separate from wildcard route?
+                //  Spring Framework 6 DISABLED trailing slash matching by default.
+                //  If the rewrite produces /products/ (with trailing slash),
+                //  @GetMapping on /products does NOT match /products/ → no handler found
+                //  → Spring forwards to /error → .anyRequest().authenticated() blocks it → 403.
+                //
+                //  This route explicitly rewrites /api/products → /products (no slash),
+                //  guaranteeing the controller's @GetMapping matches correctly.
+                // ─────────────────────────────────────────────────────────────
+                .route("product-service-public-root", r -> r
+                        .path("/api/products")
+                        .and().method("GET")
+                        .filters(f -> f
+                                .rewritePath("/api/products", "/products"))
+                        .uri("lb://PRODUCT-SERVICE"))
+
+                // ─────────────────────────────────────────────────────────────
+                // ROUTE 4a: Product Service — Public READ on sub-paths (NO JWT)
+                // Gateway : GET /api/products/**       (sub-paths only, e.g. /api/products/5)
+                // Service : GET /products/**
                 //
                 // WHY no JWT?
                 //  Product Service SecurityConfig has:
@@ -98,7 +119,6 @@ public class FilterConfig {
                 //  Gateway must align — requiring JWT here would block all guests.
                 //
                 // Endpoints covered:
-                //   GET /api/products          → /products        (list all, paginated)
                 //   GET /api/products/5        → /products/5      (get by id)
                 //   GET /api/products/search   → /products/search (search)
                 //
@@ -107,14 +127,27 @@ public class FilterConfig {
                 //    POST/PUT/DELETE fall through to Route 4b.
                 // ─────────────────────────────────────────────────────────────
                 .route("product-service-public", r -> r
-                        .path("/api/products/**", "/api/products")
+                        .path("/api/products/**")
                         .and().method("GET")
                         .filters(f -> f
-                                .rewritePath("/api/products/?(?<segment>.*)", "/products/${segment}"))
+                                .rewritePath("/api/products/(?<segment>.*)", "/products/${segment}"))
                         .uri("lb://PRODUCT-SERVICE"))
 
                 // ─────────────────────────────────────────────────────────────
-                // ROUTE 4b: Product Service — Protected WRITE (JWT REQUIRED)
+                // ROUTE 4b-ROOT: Product Service — Protected WRITE on exact root path (JWT REQUIRED)
+                // Gateway : POST /api/products         (create product — root path)
+                // Service : POST /products
+                // ─────────────────────────────────────────────────────────────
+                .route("product-service-protected-root", r -> r
+                        .path("/api/products")
+                        .and().method("POST", "PUT", "DELETE")
+                        .filters(f -> f
+                                .filter(jwtAuthFilter)
+                                .rewritePath("/api/products", "/products"))
+                        .uri("lb://PRODUCT-SERVICE"))
+
+                // ─────────────────────────────────────────────────────────────
+                // ROUTE 4b: Product Service — Protected WRITE on sub-paths (JWT REQUIRED)
                 // Gateway : POST/PUT/DELETE /api/products/**
                 // Service : POST/PUT/DELETE /products/**
                 //
@@ -126,22 +159,31 @@ public class FilterConfig {
                 //  Gateway validates JWT + forwards X-User-Role → service enforces ADMIN role.
                 //
                 // Endpoints covered:
-                //   POST   /api/products      → /products      (create product)
                 //   PUT    /api/products/5    → /products/5    (update product)
                 //   DELETE /api/products/5    → /products/5    (delete product)
                 // ─────────────────────────────────────────────────────────────
                 .route("product-service-protected", r -> r
-                        .path("/api/products/**", "/api/products")
+                        .path("/api/products/**")
                         .and().method("POST", "PUT", "DELETE")
                         .filters(f -> f
                                 .filter(jwtAuthFilter)    // JWT required, X-User-Role forwarded
-                                .rewritePath("/api/products/?(?<segment>.*)", "/products/${segment}"))
+                                .rewritePath("/api/products/(?<segment>.*)", "/products/${segment}"))
                         .uri("lb://PRODUCT-SERVICE"))
 
                 // ─────────────────────────────────────────────────────────────
-                // ROUTE 5: Order Service (JWT + RewritePath)
-                // Gateway : /api/orders/**
-                // Service : /order/**
+                // ROUTE 5a: Order Service — Exact root (JWT + RewritePath)
+                // Gateway : /api/orders   → /order  (no trailing slash)
+                // ─────────────────────────────────────────────────────────────
+                .route("order-service-root", r -> r
+                        .path("/api/orders")
+                        .filters(f -> f
+                                .filter(jwtAuthFilter)
+                                .rewritePath("/api/orders", "/order"))
+                        .uri("lb://ORDER-SERVICE"))
+
+                // ─────────────────────────────────────────────────────────────
+                // ROUTE 5b: Order Service — Sub-paths (JWT + RewritePath)
+                // Gateway : /api/orders/**  → /order/**
                 // ─────────────────────────────────────────────────────────────
                 .route("order-service", r -> r
                         .path("/api/orders/**")
