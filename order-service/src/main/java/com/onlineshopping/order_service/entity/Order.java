@@ -26,5 +26,3 @@ public class Order {
     private String status; // PENDING, CONFIRMED, DELIVERED
     private LocalDateTime createdAt;
 }
-
-

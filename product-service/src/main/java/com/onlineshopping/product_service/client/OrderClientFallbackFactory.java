@@ -19,7 +19,7 @@ public class OrderClientFallbackFactory implements FallbackFactory<OrderClient> 
     @Override
     public OrderClient create(Throwable cause) {
         log.error("Order Service is unavailable. Fallback triggered: {}", cause.getMessage());
-        
+
         return new OrderClient() {
             @Override
             public OrderResponse getLatestUserOrder(Long userId) {
@@ -37,4 +37,3 @@ public class OrderClientFallbackFactory implements FallbackFactory<OrderClient> 
         };
     }
 }
-

@@ -19,6 +19,7 @@ public class FeignConfig {
             if (attrs != null) {
                 HttpServletRequest request = attrs.getRequest();
 
+                // Forward gateway-injected identity headers
                 String userId = request.getHeader("X-User-Id");
                 String username = request.getHeader("X-Username");
                 String role = request.getHeader("X-User-Role");
@@ -26,6 +27,13 @@ public class FeignConfig {
                 if (userId != null) requestTemplate.header("X-User-Id", userId);
                 if (username != null) requestTemplate.header("X-Username", username);
                 if (role != null) requestTemplate.header("X-User-Role", role);
+
+                // Forward the original JWT Bearer token so downstream services
+                // that validate JWT directly (not just X-User-* headers) can authenticate
+                String authorization = request.getHeader("Authorization");
+                if (authorization != null && authorization.startsWith("Bearer ")) {
+                    requestTemplate.header("Authorization", authorization);
+                }
             }
         };
     }
