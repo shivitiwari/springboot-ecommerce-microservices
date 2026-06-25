@@ -1,8 +1,6 @@
 package com.onlineshopping.order_service.dto;
 
 import com.onlineshopping.order_service.entity.OrderItem;
-import jakarta.validation.constraints.NotEmpty;
-import jakarta.validation.constraints.NotNull;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
