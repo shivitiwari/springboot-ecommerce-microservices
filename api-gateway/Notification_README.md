@@ -1084,3 +1084,122 @@ Step 6: Check failure notification:
 | **Ack mode** | Auto | Manual (reliability guarantee) ✅ |
 | **Concurrency** | Default (1) | 3 (matches topic partitions) ✅ |
 | **`order-events` consumer** | This service | Inventory Service ✅ |
+
+---
+
+## 🤖 SPRING AI INTEGRATION — AI-Powered Notifications
+
+> **Reference:** See `SpringAI_README.md` for full AI Service documentation.
+
+### Overview
+
+Instead of static email templates, Notification Service can call AI Service to generate **personalized, context-aware** email content for each order status update.
+
+### 🟢 NICE TO HAVE — Feign Client to AI Service
+
+#### 1. Add OpenFeign Dependency (if not already present)
+
+```xml
+<dependency>
+    <groupId>org.springframework.cloud</groupId>
+    <artifactId>spring-cloud-starter-openfeign</artifactId>
+</dependency>
+```
+
+#### 2. Create `AiClient.java`
+
+```java
+package com.onlineshopping.notification_service.client;
+
+import org.springframework.cloud.openfeign.FeignClient;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+
+import java.util.Map;
+
+/**
+ * Feign client for AI Service — generates personalized notification content.
+ * 
+ * If AI Service is unavailable, Notification Service falls back to static templates.
+ * This is a non-critical enhancement — notifications still work without AI.
+ */
+@FeignClient(name = "AI-SERVICE", fallback = AiClientFallback.class)
+public interface AiClient {
+
+    @PostMapping("/ai/generate/notification")
+    Map<String, String> generateNotificationContent(@RequestBody Map<String, Object> request);
+}
+```
+
+#### 3. Create Fallback
+
+```java
+package com.onlineshopping.notification_service.client;
+
+import org.springframework.stereotype.Component;
+
+import java.util.Map;
+
+@Component
+public class AiClientFallback implements AiClient {
+    @Override
+    public Map<String, String> generateNotificationContent(Map<String, Object> request) {
+        // Return null — signals NotificationServiceImpl to use static template
+        return null;
+    }
+}
+```
+
+#### 4. Update `NotificationServiceImpl.java`
+
+```java
+private String getEmailBody(OrderStatusEvent event) {
+    // Try AI-generated content first
+    try {
+        Map<String, Object> aiRequest = Map.of(
+            "status", event.getStatus(),
+            "userName", extractName(event.getUserEmail()),
+            "orderId", event.getOrderId(),
+            "totalAmount", event.getTotalAmount()
+        );
+        Map<String, String> aiResponse = aiClient.generateNotificationContent(aiRequest);
+        if (aiResponse != null && aiResponse.containsKey("content")) {
+            return aiResponse.get("content");
+        }
+    } catch (Exception e) {
+        log.warn("AI content generation failed, using static template: {}", e.getMessage());
+    }
+
+    // Fallback to static template
+    return getStaticEmailBody(event);
+}
+
+private String getStaticEmailBody(OrderStatusEvent event) {
+    return switch (event.getStatus()) {
+        case "CONFIRMED" -> String.format(
+            "Your order %s has been confirmed! Total: ₹%.2f", 
+            event.getOrderId(), event.getTotalAmount());
+        case "FAILED" -> String.format(
+            "Unfortunately, your order %s could not be processed. Reason: %s",
+            event.getOrderId(), event.getFailureReason());
+        case "SHIPPED" -> String.format(
+            "Great news! Your order %s has been shipped.", event.getOrderId());
+        case "DELIVERED" -> String.format(
+            "Your order %s has been delivered. Enjoy!", event.getOrderId());
+        default -> "Your order status has been updated to: " + event.getStatus();
+    };
+}
+```
+
+### Benefits of AI-Powered Notifications
+
+| Feature | Static Template | AI-Generated |
+|---------|----------------|--------------|
+| **Personalization** | Generic greeting | Uses customer name, order context |
+| **Tone** | Fixed | Adapts (celebration for confirmed, empathy for failed) |
+| **Content variety** | Same text every time | Different wording each time (less "spam" feel) |
+| **Emoji/formatting** | Manual | AI adds relevant emojis naturally |
+| **Multilingual** | Requires separate templates per language | Can generate in user's language via prompt |
+| **Resilience** | Always works | Falls back to static if AI unavailable ✅ |
+
+

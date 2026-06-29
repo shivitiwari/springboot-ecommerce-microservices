@@ -1616,3 +1616,51 @@ Expected: 200 OK with updated UserResponse
 | `400 Bad Request` on register | Username or email already exists | Use different username/email |
 | `500 Internal Server Error` | User not found | Check userId exists in DB |
 
+---
+
+## 🤖 SPRING AI INTEGRATION — How AI Service Connects to Users
+
+> **Reference:** See `SpringAI_README.md` for full AI Service documentation.
+
+### AI Service Uses User Service Data (via Feign)
+
+The AI Service chatbot uses **Spring AI Function Calling** for personalization:
+
+```
+User: "Recommend something based on my preferences"
+    │
+    ▼
+AI Service (ChatClient + Function Calling)
+    │  LLM decides: call getUserProfile(userId)
+    ▼
+UserProfileFunction.java → Feign → GET /api/auth/user/{id}
+    │
+    ▼
+User Service returns user data (name, email)
+    │
+    ▼
+LLM generates personalized response using user context
+```
+
+### What User Service Must Provide (Already Available ✅)
+
+| Endpoint | Used By AI Service | Purpose |
+|----------|-------------------|---------|
+| `GET /api/auth/user/{id}` | ✅ `UserProfileFunction` | Get user info for personalization |
+
+### No Changes Required to User Service for AI Integration
+
+AI Service calls User Service via Feign client using the existing `/api/auth/user/{id}` endpoint.
+
+### Future Enhancement: User Preference Learning
+
+```java
+// Future: Store user search/purchase patterns in AI Service vector store
+// Enable personalized recommendations:
+//   - "Based on your purchase history, you might like..."
+//   - "Users who bought X also bought Y"
+// This requires Order Service to publish order-completed events
+// and AI Service to build user preference embeddings
+```
+
+

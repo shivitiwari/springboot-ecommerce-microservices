@@ -1429,4 +1429,57 @@ Step 8: Update status (any authenticated user currently — add ADMIN check if n
 | `500 Failed to create order` | Order Service can't call User/Product Service | Ensure both services are running and in Eureka |
 | `429 Too Many Requests` | Rate limit hit (20/min for orders) | Wait 60s |
 
+---
+
+## 🤖 SPRING AI INTEGRATION — How AI Service Connects to Orders
+
+> **Reference:** See `SpringAI_README.md` for full AI Service documentation.
+
+### AI Service Uses Order Service Data (via Feign)
+
+The AI Service chatbot uses **Spring AI Function Calling** to answer order-related questions:
+
+```
+User: "What's the status of my last order?"
+    │
+    ▼
+AI Service (ChatClient + Function Calling)
+    │  LLM decides: call getOrderStatus(userId)
+    ▼
+OrderStatusFunction.java → Feign → GET /order/user/{userId}
+    │
+    ▼
+Order Service returns latest order data
+    │
+    ▼
+LLM generates: "Your order #abc123 was placed on Jan 5 and is currently 
+               CONFIRMED. Total: ₹4,999. It contains 2 items."
+```
+
+### What Order Service Must Provide (Already Available ✅)
+
+| Endpoint | Used By AI Service | Purpose |
+|----------|-------------------|---------|
+| `GET /order/{id}` | ✅ `OrderStatusFunction` | Get specific order details |
+| `GET /order/user/{userId}` | ✅ `OrderStatusFunction` | Get user's latest order |
+
+### No Changes Required to Order Service for AI Integration
+
+AI Service calls Order Service via Feign client using existing endpoints.
+Order Service endpoints already return all necessary data (orderId, status, items, totalAmount, createdAt).
+
+### Future Enhancement: Order Fraud Detection
+
+AI Service can analyze order patterns via structured output:
+
+```java
+// Future: AI Service calls Order Service for multiple orders
+// Then uses LLM structured output to detect anomalies:
+// - Unusual order frequency (10 orders in 1 minute)
+// - Extremely high total amounts
+// - Multiple failed orders from same user
+// This would be a background scheduled task, not real-time
+```
+
+
 

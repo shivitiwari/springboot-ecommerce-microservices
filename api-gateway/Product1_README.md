@@ -1436,4 +1436,132 @@ Effect:   @CacheEvict removes product from Redis cache
 | `Category not found` on create | Category ID doesn't exist in DB | Create category first |
 | `Service not found` in Eureka | Product service not started | Start product-service |
 
+---
 
+## 🤖 SPRING AI INTEGRATION — Required Changes
+
+> **Reference:** See `SpringAI_README.md` for full AI Service documentation.
+
+### 🟡 IMPORTANT — Publish Product Events to Kafka (for AI Vector Sync)
+
+AI Service maintains a vector store of all products for **semantic search** and **recommendations**.
+Product Service must publish events whenever products are created/updated/deleted.
+
+#### 1. Add Kafka Dependency to `pom.xml`
+
+```xml
+<!-- Kafka Producer (publish product events for AI Service) -->
+<dependency>
+    <groupId>org.springframework.kafka</groupId>
+    <artifactId>spring-kafka</artifactId>
+</dependency>
+```
+
+#### 2. Add Kafka Config to `application.properties`
+
+```properties
+# ================= KAFKA PRODUCER (for AI Service vector sync) =================
+spring.kafka.bootstrap-servers=localhost:9092
+spring.kafka.producer.key-serializer=org.apache.kafka.common.serialization.StringSerializer
+spring.kafka.producer.value-serializer=org.springframework.kafka.support.serializer.JsonSerializer
+```
+
+#### 3. Create `ProductEventProducer.java`
+
+```java
+package com.onlineshopping.product_service.kafka;
+
+import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.stereotype.Component;
+
+import java.util.Map;
+
+/**
+ * Publishes product events to Kafka topic "product-events".
+ * AI Service consumes these to keep its vector store (PGVector) in sync.
+ * 
+ * This enables:
+ *   - Semantic product search (find by meaning, not just keywords)
+ *   - Product recommendations (similar products via vector similarity)
+ *   - Chatbot context (function calling with real-time product data)
+ */
+@Component
+public class ProductEventProducer {
+
+    private final KafkaTemplate<String, Object> kafkaTemplate;
+
+    public ProductEventProducer(KafkaTemplate<String, Object> kafkaTemplate) {
+        this.kafkaTemplate = kafkaTemplate;
+    }
+
+    public void publishProductEvent(String eventType, Long productId,
+                                    String name, String description,
+                                    String category, Double price) {
+        Map<String, Object> event = Map.of(
+            "eventType", eventType,       // CREATED, UPDATED, DELETED
+            "productId", productId,
+            "name", name,
+            "description", description != null ? description : "",
+            "category", category != null ? category : "",
+            "price", price
+        );
+        kafkaTemplate.send("product-events", productId.toString(), event);
+    }
+}
+```
+
+#### 4. Update `ProductServiceImpl.java` — Publish events on CRUD
+
+```java
+// Inject ProductEventProducer
+private final ProductEventProducer productEventProducer;
+
+// In createProduct():
+productEventProducer.publishProductEvent("CREATED", savedProduct.getId(),
+    savedProduct.getName(), savedProduct.getDescription(),
+    savedProduct.getCategory().getName(), savedProduct.getPrice());
+
+// In updateProduct():
+productEventProducer.publishProductEvent("UPDATED", product.getId(),
+    product.getName(), product.getDescription(),
+    product.getCategory().getName(), product.getPrice());
+
+// In deleteProduct():
+productEventProducer.publishProductEvent("DELETED", productId, "", "", "", 0.0);
+```
+
+---
+
+### 🟢 NICE TO HAVE — AI-Generated Product Descriptions
+
+Add Feign client to call AI Service for auto-generating descriptions:
+
+```java
+// product-service/client/AiClient.java
+@FeignClient(name = "AI-SERVICE")
+public interface AiClient {
+    @PostMapping("/ai/generate/description")
+    Map<String, String> generateDescription(@RequestBody Map<String, Object> request);
+}
+```
+
+**Usage in ProductServiceImpl:**
+```java
+public void createProduct(CreateProduct dto) {
+    if (dto.getDescription() == null || dto.getDescription().isBlank()) {
+        try {
+            Map<String, Object> aiReq = Map.of(
+                "productName", dto.getName(),
+                "category", dto.getCategoryName(),
+                "price", dto.getPrice()
+            );
+            Map<String, String> aiResp = aiClient.generateDescription(aiReq);
+            dto.setDescription(aiResp.get("description"));
+        } catch (Exception e) {
+            // AI unavailable — use empty description (non-critical)
+            log.warn("AI description generation failed: {}", e.getMessage());
+        }
+    }
+    // ... continue saving product
+}
+```

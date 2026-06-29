@@ -1,7 +1,7 @@
 # Online Shopping Microservices - Architecture Design
 
-> **Last Updated:** April 21, 2026  
-> **Version:** 2.0 - Complete Integration Guide
+> **Last Updated:** June 25, 2026  
+> **Version:** 3.0 - Complete Integration Guide (with Spring AI)
 
 ---
 
@@ -54,6 +54,11 @@
 │   │ API-GATEWAY │    │USER-SERVICE │    │PRODUCT-     │    │ORDER-SERVICE│            │
 │   │ :8080       │    │ :8081       │    │SERVICE :8082│    │ :8083       │            │
 │   └─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘            │
+│                                                                                         │
+│   ┌─────────────┐    ┌─────────────┐    ┌─────────────┐                               │
+│   │INVENTORY-   │    │NOTIFICATION-│    │ AI-SERVICE  │                               │
+│   │SERVICE :8084│    │SERVICE :8085│    │ :8086       │                               │
+│   └─────────────┘    └─────────────┘    └─────────────┘                               │
 │                                                                                         │
 │   Heartbeat ♡ every 30s | Instance Health Check | Load Balancing Info                 │
 │                                                                                         │
@@ -999,17 +1004,139 @@ ServerHttpRequest modifiedRequest = exchange.getRequest()
 14. Add Kafka consumer service
 15. Add distributed tracing (Zipkin/Sleuth)
 
+### Phase 5: AI Integration (Spring AI)
+16. ✅ Build AI Service (see `SpringAI_README.md`)
+17. Add PGVector store for product embeddings
+18. Implement chatbot with function calling
+19. Add semantic search endpoint
+20. Product Service → publish product-events to Kafka (for AI vector sync)
+21. Notification Service → Feign to AI Service (smart email content)
+22. Product Service → Feign to AI Service (auto-generate descriptions)
+
 ---
 
 ## 🔮 Optional Enhancements
 
 | Enhancement | Purpose | Priority | Status |
 |-------------|---------|----------|--------|
+| **Spring AI Service** | Chatbot, semantic search, recommendations | HIGH | ✅ Documented |
 | **Circuit Breaker** | Handle downstream failures | HIGH | Dependency exists |
 | **Distributed Tracing** | Debug cross-service requests | MEDIUM | Not started |
 | **Config Server** | Centralized configuration | MEDIUM | Not started |
 | **Kafka Consumer** | Process order events | MEDIUM | Producer exists |
 | **API Gateway Fallback** | Return cached/default on failure | HIGH | Not started |
+
+---
+
+## 🤖 5. SPRING AI INTEGRATION — AI-Powered Features
+
+### AI Service (Port: 8086) — NEW MICROSERVICE
+
+| Feature | Spring AI Component | Endpoint |
+|---------|---------------------|----------|
+| **Shopping Assistant Chatbot** | `ChatClient` + Function Calling | `POST /api/ai/chat` |
+| **Semantic Product Search** | `EmbeddingModel` + `VectorStore` (PGVector) | `GET /api/ai/search?q=...` |
+| **Product Recommendations** | `VectorStore` similarity search | `GET /api/ai/recommendations/{id}` |
+| **AI Product Descriptions** | `ChatClient` prompt templates | `POST /api/ai/generate/description` |
+| **Smart Notifications** | `ChatClient` content generation | `POST /api/ai/generate/notification` |
+| **Streaming Responses** | `ChatClient.stream()` → SSE | `POST /api/ai/chat/stream` |
+
+### How Function Calling Works (Spring AI)
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│              SPRING AI FUNCTION CALLING — Shopping Assistant                  │
+├──────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  User: "Is the Gaming Laptop in stock?"                                      │
+│       │                                                                      │
+│       ▼                                                                      │
+│  ChatClient sends message to LLM (GPT-4o-mini / Llama3)                     │
+│       │                                                                      │
+│       │  LLM sees available functions:                                       │
+│       │    - searchProducts(query, maxPrice, category)                       │
+│       │    - getOrderStatus(userId)                                          │
+│       │    - checkInventory(productId, productName)                          │
+│       │                                                                      │
+│       │  LLM decides: "I need to call checkInventory"                        │
+│       │  Returns: { "name": "checkInventory", "args": {"productName":        │
+│       │             "Gaming Laptop"} }                                        │
+│       ▼                                                                      │
+│  Spring AI intercepts → calls InventoryCheckFunction.apply()                 │
+│       │                                                                      │
+│       │  Function calls Product Service via Feign                            │
+│       │  → GET /products?search=Gaming+Laptop                                │
+│       │  → Returns: { productId: 5, stock: 42, inStock: true }               │
+│       ▼                                                                      │
+│  Spring AI sends function result back to LLM                                 │
+│       │                                                                      │
+│       │  LLM generates natural language response                             │
+│       ▼                                                                      │
+│  Response: "Yes! The Gaming Laptop is currently in stock with                │
+│             42 units available. Would you like to place an order?"            │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Semantic Search vs Keyword Search
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│         KEYWORD SEARCH (existing)  vs  SEMANTIC SEARCH (Spring AI)           │
+├──────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  Query: "something to keep my coffee hot"                                    │
+│                                                                              │
+│  KEYWORD (SQL LIKE / Full-text):                                             │
+│    SELECT * FROM products WHERE name LIKE '%coffee%' OR name LIKE '%hot%'    │
+│    → Result: Coffee Mug (if exists)                                          │
+│    → MISSES: "Insulated Travel Thermos" (no matching keywords!)              │
+│                                                                              │
+│  SEMANTIC (Spring AI VectorStore):                                            │
+│    1. Embed query → vector [0.12, -0.45, 0.78, ...]                          │
+│    2. Find nearest vectors in PGVector (cosine similarity)                    │
+│    3. Results ranked by MEANING similarity:                                   │
+│       → "Insulated Travel Thermos" (0.94 similarity) ✅                      │
+│       → "Stainless Steel Water Bottle" (0.82 similarity)                     │
+│       → "Coffee Mug - Ceramic" (0.79 similarity)                             │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Integration Points with Existing Services
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│              AI SERVICE INTEGRATION MAP                                       │
+├──────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  Product Service ──Kafka──► AI Service (product-events topic)                │
+│    • On product CRUD → re-embed in vector store                              │
+│    • Keeps semantic search up-to-date                                         │
+│                                                                              │
+│  Product Service ──Feign──► AI Service                                       │
+│    • POST /ai/generate/description                                           │
+│    • Auto-generate SEO descriptions when admin skips it                      │
+│                                                                              │
+│  Notification Service ──Feign──► AI Service                                  │
+│    • POST /ai/generate/notification                                          │
+│    • AI-crafted personalized email content                                   │
+│    • Fallback to static templates if AI unavailable                          │
+│                                                                              │
+│  AI Service ──Feign──► Product Service                                       │
+│    • GET /products/{id} (for function calling)                               │
+│    • GET /products/search?query=... (for chatbot)                            │
+│                                                                              │
+│  AI Service ──Feign──► Order Service                                         │
+│    • GET /order/user/{userId} (for chatbot order status)                     │
+│                                                                              │
+│  AI Service ──Feign──► User Service                                          │
+│    • GET /api/auth/user/{id} (for personalization)                           │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Full documentation: See `SpringAI_README.md`
 
 ---
 
@@ -1027,22 +1154,35 @@ Start-Sleep -Seconds 30
 cd eureka-server
 mvn spring-boot:run
 
-# 4. Start API Gateway (Terminal 2)
-cd api-gateway
-mvn spring-boot:run
-
-# 5. Start User Service (Terminal 3)
+# 4. Start User Service (Terminal 2)
 cd user-service
 mvn spring-boot:run
 
-# 6. Start Product Service (Terminal 4)
+# 5. Start Product Service (Terminal 3)
 cd product-service
 mvn spring-boot:run
 
-# 7. Start Order Service (Terminal 5)
+# 6. Start Order Service (Terminal 4)
 cd order-service
 mvn spring-boot:run
 
+# 7. Start Inventory Service (Terminal 5)
+cd inventory-service
+mvn spring-boot:run
+
+# 8. Start Notification Service (Terminal 6)
+cd notification-service
+mvn spring-boot:run
+
+# 9. Start AI Service (Terminal 7) — requires OPENAI_API_KEY or Ollama
+$env:OPENAI_API_KEY="sk-your-key-here"
+cd ai-service
+mvn spring-boot:run
+# OR for local dev: mvn spring-boot:run -Dspring-boot.run.profiles=dev
+
+# 10. Start API Gateway (Terminal 8 — start LAST)
+cd api-gateway
+mvn spring-boot:run
 ```
 
 ---
@@ -1059,6 +1199,8 @@ mvn spring-boot:run
 | `product-service-public` | `/api/products/**` | GET | ❌ No | PRODUCT-SERVICE `/products/**` |
 | `product-service-protected` | `/api/products/**` | POST/PUT/DELETE | ✅ Yes | PRODUCT-SERVICE `/products/**` |
 | `order-service` | `/api/orders/**` | ANY | ✅ Yes | ORDER-SERVICE `/order/**` |
+| `ai-service-public` | `/api/ai/search/**`, `/api/ai/recommendations/**` | GET | ❌ No | AI-SERVICE `/ai/**` |
+| `ai-service-protected` | `/api/ai/**` | POST/PUT/DELETE | ✅ Yes | AI-SERVICE `/ai/**` |
 
 ### Rate Limits — RateLimitingFilter.java
 
@@ -1077,8 +1219,11 @@ mvn spring-boot:run
 |---------|-----------------|-------------------|
 | **API Gateway** | — Nothing | Redis pool config (done) |
 | **User Service** | Redis token blacklist, JWT re-parsing in profile/update | Redis user cache |
-| **Product Service** | Remove duplicate endpoint, fix JWT secret | Redis cache, remove deprecated files |
+| **Product Service** | Remove duplicate endpoint, fix JWT secret | Redis cache, Kafka producer for AI sync |
 | **Order Service** | SecurityConfig, GatewayAuthFilter, fix constructor, fix Kafka injection, fix getUserOrders return type | FeignConfig, Redis cache, order status enum |
+| **Inventory Service** | Full build required (see Inventory_README.md) | — |
+| **Notification Service** | Full build required (see Notification_README.md) | AI-powered email content |
+| **AI Service** | Full build required (see SpringAI_README.md) | — |
 
 ---
 
@@ -1126,3 +1271,17 @@ mvn spring-boot:run
 | `http://localhost:8080/actuator/health` | Gateway health |
 | `http://localhost:8080/actuator/gateway/routes` | Active routes |
 | `http://localhost:8083/swagger-ui.html` | Order Service Swagger |
+
+### 🤖 AI Service (Spring AI)
+
+| Method | URL | Auth | Body |
+|--------|-----|------|------|
+| POST | `/api/ai/chat` | Bearer | `{"message":"Show me laptops under 50000","sessionId":"s1"}` |
+| POST | `/api/ai/chat` | Bearer | `{"message":"What's my order status?","sessionId":"s1"}` |
+| POST | `/api/ai/chat/stream` | Bearer | `{"message":"Recommend a phone","sessionId":"s1"}` |
+| GET | `/api/ai/search?q=comfortable+running+shoes` | None | — |
+| GET | `/api/ai/search?q=keep+coffee+hot&limit=5` | None | — |
+| GET | `/api/ai/recommendations/1?limit=5` | None | — |
+| POST | `/api/ai/generate/description` | Bearer ADMIN | `{"productName":"Earbuds","category":"Electronics","price":2999}` |
+| POST | `/api/ai/generate/notification` | Bearer ADMIN | `{"status":"CONFIRMED","userName":"John","orderId":"abc","totalAmount":4999}` |
+
