@@ -192,7 +192,7 @@ Client --Bearer JWT--> API Gateway
 ### Required JWT Claims
 
 ```json
-{ "sub": "john_doe", "userId": "101", "role": "ADMIN", "email": "john@example.com", "iat": ..., "exp": ... }
+###{ "sub": "john_doe", "userId": "101", "role": "ADMIN", "email": "john@example.com", "iat": ..., "exp": ... }
 ```
 
 ---
