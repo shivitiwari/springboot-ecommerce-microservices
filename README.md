@@ -1,7 +1,7 @@
 # 🛒 Online Shopping — Microservices E-Commerce Backend
 
 > Consolidated project documentation — merged from all service READMEs and the architecture design doc.
-> **Last Updated:** June 25, 2026 · **Spring Boot:** 3.2.5 · **Spring Cloud:** 2023.0.1 · **Java:** 21
+> **Last Updated:** July 14, 2026 · **Spring Boot:** 3.2.5 · **Spring Cloud:** 2023.0.1 · **Java:** 21
 
 A microservices-based e-commerce backend built with **Spring Boot**, **Spring Cloud Gateway**, **Eureka**,
 **Redis**, **Apache Kafka**, **MySQL**, and **MongoDB**, using a **Choreography-Based Saga Pattern** for
@@ -36,31 +36,38 @@ and recommendations.
 
 ```
 Order Service (:8083)
-   │ publish OrderEvent(status=PLACED)
+   │ publish OrderEvent { orderId, userId, userEmail, items, totalAmount, status=PLACED }
    ▼
 Kafka: order-events (3 partitions)
-   │ consumed by
+   │ consumed by  [group: inventory-service-group]
    ▼
 Inventory Service (:8084)
-   ├─ Redis SETNX distributed lock (cross-instance)
-   ├─ JPA @Version optimistic lock (same JVM)
-   ├─ Idempotency check (ProcessedEvent table)
+   ├─ Idempotency check (ProcessedEvent table) — skip duplicate deliveries
+   ├─ Redis SETNX distributed lock (cross-instance race protection)
+   ├─ JPA @Version optimistic lock (same-JVM race protection, up to 3 retries)
    │
-   ├── ✅ Stock OK  → publish CONFIRMED → order-status-updated
-   └── ❌ Stock FAIL → publish → inventory-failed
+   ├── ✅ Stock OK
+   │       └── publish OrderStatusEvent { status=CONFIRMED } → order-status-updated
+   │
+   └── ❌ Stock FAIL (or contention exhausted)
+           └── publish InventoryFailedEvent { failureReason } → inventory-failed
                               │
                               ▼
-                     Order Service (SAGA compensation)
-                     sets order.status = FAILED
-                     publish FAILED → order-status-updated
+              Kafka: inventory-failed (3 partitions)
+                              │ consumed by  [group: order-service-saga-group]
+                              ▼
+                     Order Service — InventoryFailedConsumer
+                     1. order.status = FAILED  (compensating transaction → MongoDB)
+                     2. publish OrderStatusEvent { status=FAILED } → order-status-updated
                               │
                               ▼
               Kafka: order-status-updated (3 partitions)
-                              │ consumed by
+                              │ consumed by  [group: notification-service-group]
                               ▼
                  Notification Service (:8085)
-                 → sends CONFIRMED / FAILED / SHIPPED / DELIVERED emails
+                 → sends CONFIRMED / FAILED / SHIPPED / DELIVERED emails (Spring Mail)
                  → logs to notification_db
+                 → failed sends → DLT (order-status-updated.DLT) after 3 retries
 ```
 
 **Why choreography-based?** Each service reacts to Kafka events independently — no central
@@ -78,7 +85,7 @@ instances per service).
 | **API Gateway** | 8080 | — | `API-GATEWAY` | Single entry point: JWT validation, rate limiting, response caching, routing |
 | **User Service** | 8081 | MySQL `user_db` | `USER-SERVICE` | Registration, login (JWT), logout, profile, token blacklist |
 | **Product Service** | 8082 | MySQL `product_db` | `PRODUCT-SERVICE` | Product/category CRUD, search, pagination, RBAC |
-| **Order Service** | 8083 | MongoDB `orderdb` | `ORDER-SERVICE` | Order placement, Feign calls to User/Product, Kafka producer, Saga compensation consumer |
+| **Order Service** | 8083 | MongoDB `orderdb` | `ORDER-SERVICE` | Order placement, Feign calls to User/Product, Circuit Breaker (Resilience4j), Kafka producer (`order-events`), Saga compensation consumer (`inventory-failed` → marks order FAILED + publishes to `order-status-updated`) |
 | **Inventory Service** | 8084 | MySQL `inventory_db` | `INVENTORY-SERVICE` | Stock check/decrement, two-layer locking, Saga participant |
 | **Notification Service** | 8085 | MySQL `notification_db` | `NOTIFICATION-SERVICE` | Terminal Kafka consumer — sends order status emails |
 | **AI Service** *(optional)* | 8086 | PGVector | `AI-SERVICE` | Chatbot (function calling), semantic search, recommendations, AI-generated content |
@@ -122,7 +129,7 @@ CREATE DATABASE IF NOT EXISTS notification_db;
 2. Eureka Server        (:8761)
 3. User Service         (:8081)
 4. Product Service      (:8082)
-5. Order Service        (:8083)  ← must have inventory-failed consumer added
+5. Order Service        (:8083)
 6. Inventory Service    (:8084)
 7. Notification Service (:8085)
 8. AI Service           (:8086)  ← optional, requires OPENAI_API_KEY or Ollama
@@ -255,7 +262,7 @@ routes must be declared before catch-all routes.
 
 | Method | Endpoint | Auth | Body |
 |---|---|:---:|---|
-| POST | `/api/orders/newOrder` | ✅ | `{"userId","items":[{"productId","quantity"}]}` |
+| POST | `/api/orders/newOrder` | ✅ | `{"userId","items":[{"productId","quantity"}]}` — `userEmail` resolved internally via Feign |
 | GET | `/api/orders/{mongoId}` | ✅ | — |
 | GET | `/api/orders/user/{userId}` | ✅ | — |
 | PUT | `/api/orders/{id}/status?status=CONFIRMED` | ✅ | — |
@@ -316,10 +323,7 @@ Order Service (:8083)
 | **User Service** | — | — | optional Feign (order history) |
 | **API Gateway** | ✅ Route | ✅ Route | ✅ Route |
 
-> ⚠️ **Known field mismatch:** Order Service's `UserResponse` expects `{"id","name","email"}`,
-> but User Service's default entity returns `{"id","username","role"}`. Resolve by either
-> adding a `name` alias/dedicated endpoint on User Service, or renaming the field on the
-> Order Service DTO to `username`.
+> ⚠️ **Known field mismatch:** Order Service's `UserResponse` expects `{"id","name","email"}` but User Service returns `{"id","username","role"}` — the `name` vs `username` field diverges. The `email` field used by the Saga (`userEmail` on `OrderEvent`) requires User Service to include it in the response; verify this is present before end-to-end testing the Saga failure path.
 
 ---
 
@@ -331,10 +335,17 @@ Order Service (:8083)
 | `order-status-updated` | 3 | Inventory Service (CONFIRMED) + Order Service (FAILED/SHIPPED/DELIVERED) | **Notification Service** | All status changes → email |
 | `inventory-failed` | 3 | Inventory Service | Order Service (Saga compensation) | Triggers compensating transaction |
 
-**Consumer groups:** `inventory-service-group`, `order-service-saga-group`,
-`notification-service-group` — each with manual ack (`enable-auto-commit=false`), so an
-offset is only committed after the corresponding DB write / email send succeeds, giving
-natural at-least-once retry semantics on infrastructure failures.
+**Consumer groups:**
+
+| Group | Service | Topic | Commits after |
+|---|---|---|---|
+| `inventory-service-group` | Inventory Service | `order-events` | Stock reservation + idempotency row saved |
+| `order-service-saga-group` | Order Service | `inventory-failed` | Order marked FAILED in MongoDB + status event published |
+| `notification-service-group` | Notification Service | `order-status-updated` | Email sent + notification log saved |
+
+All consumers use `enable-auto-commit=false` with `ack-mode=manual` — the offset is committed
+only after the DB write (and publish, where applicable) succeeds. A crash before `ack.acknowledge()`
+causes Kafka to redeliver the message; idempotency checks prevent double-processing.
 
 ### Race-Condition Defense (Inventory Service — Two-Layer Locking)
 
@@ -346,6 +357,108 @@ natural at-least-once retry semantics on infrastructure failures.
 
 Idempotency is enforced independently via a `ProcessedEvent` table keyed by `orderId`, so
 Kafka's at-least-once redelivery never double-decrements stock.
+
+---
+
+### Dead Letter Topic (Notification Service — Failed Email Handling)
+
+When an email send fails after retries, the message is routed to a DLT instead of being
+silently dropped or retried forever.
+
+```
+order-status-updated (main topic)
+        │
+        ▼
+Notification Service consumer
+        │
+        ├── ✅ Email sent      → ack.acknowledge() → offset committed
+        │
+        └── ❌ Email failed (retried 3× with exponential backoff: 1s → 2s → 4s)
+                    │
+                    ▼
+          order-status-updated.DLT
+                    │
+                    ├── notification_logs row saved with status=FAILED + failureReason
+                    └── visible via GET /api/notifications/order/{orderId} for ops review
+```
+
+**`notification-service/application.properties`:**
+
+```properties
+spring.kafka.listener.ack-mode=manual
+spring.kafka.retry.topic.enabled=true
+spring.kafka.retry.topic.attempts=3
+spring.kafka.retry.topic.delay=1000
+spring.kafka.retry.topic.multiplier=2
+spring.kafka.retry.topic.max-delay=10000
+```
+
+> 3 retries covers transient SMTP failures (timeouts, rate limits). Permanent failures
+> (invalid address, suspended account) exhaust retries quickly and land in the DLT — no
+> benefit retrying those more times.
+
+---
+
+## ⚡ Circuit Breaker (Order Service — Resilience4j)
+
+Order Service wraps both Feign calls in independent circuit breakers so a failing upstream
+trips its own breaker without affecting the other.
+
+### State Machine
+
+```
+CLOSED (normal)
+    │  ≥50% failure rate over last 10 calls (min 5 calls required)
+    │  OR ≥50% slow calls (> 2s threshold)
+    ▼
+OPEN (tripped) — fallback fires immediately, no network call made
+    │  after waitDuration (30s)
+    ▼
+HALF-OPEN — sends 3 probe calls
+    ├── probes OK  → back to CLOSED
+    └── probes fail → back to OPEN
+```
+
+**`order-service/application.properties`:**
+
+```properties
+# Circuit Breaker — User Service
+resilience4j.circuitbreaker.instances.userService.slidingWindowSize=10
+resilience4j.circuitbreaker.instances.userService.minimumNumberOfCalls=5
+resilience4j.circuitbreaker.instances.userService.failureRateThreshold=50
+resilience4j.circuitbreaker.instances.userService.slowCallDurationThreshold=2s
+resilience4j.circuitbreaker.instances.userService.slowCallRateThreshold=50
+resilience4j.circuitbreaker.instances.userService.waitDurationInOpenState=30s
+resilience4j.circuitbreaker.instances.userService.permittedNumberOfCallsInHalfOpenState=3
+
+# Circuit Breaker — Product Service
+resilience4j.circuitbreaker.instances.productService.slidingWindowSize=10
+resilience4j.circuitbreaker.instances.productService.minimumNumberOfCalls=5
+resilience4j.circuitbreaker.instances.productService.failureRateThreshold=50
+resilience4j.circuitbreaker.instances.productService.slowCallDurationThreshold=2s
+resilience4j.circuitbreaker.instances.productService.slowCallRateThreshold=50
+resilience4j.circuitbreaker.instances.productService.waitDurationInOpenState=30s
+resilience4j.circuitbreaker.instances.productService.permittedNumberOfCallsInHalfOpenState=3
+
+# Actuator — expose live circuit breaker state
+management.endpoints.web.exposure.include=health,info,circuitbreakers,metrics
+management.endpoint.health.show-details=always
+management.health.circuitbreakers.enabled=true
+```
+
+When OPEN, the fallback returns HTTP **503** with no internal service names exposed:
+
+```json
+{ "timestamp": "...", "status": 503, "error": "Service Unavailable",
+  "message": "The service is temporarily unavailable. Please try again shortly.",
+  "retryAfter": 30 }
+```
+
+**Monitor live state:**
+```bash
+GET http://localhost:8083/actuator/health              # CLOSED / OPEN / HALF_OPEN
+GET http://localhost:8083/actuator/metrics/resilience4j.circuitbreaker.state
+```
 
 ---
 
@@ -364,7 +477,7 @@ Kafka's at-least-once redelivery never double-decrements stock.
 
 | DB | Owner | Shape |
 |---|---|---|
-| `orderdb` | Order Service | `{ _id, userId, userName, userEmail, items[], totalAmount, status, createdAt }` |
+| `orderdb` | Order Service | `{ _id, userId, userEmail, items[], totalAmount, status, createdAt }` — `userEmail` populated at order creation via Feign call to User Service; required for Saga failure email path |
 
 ### Redis (Port 6379)
 
@@ -385,46 +498,24 @@ Kafka's at-least-once redelivery never double-decrements stock.
 |---|:---:|:---:|:---:|:---:|:---:|:---:|
 | Core endpoints | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Eureka registration | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `GatewayAuthFilter` | — | ⚠️ partial | ✅ | ⚠️ needs adding | ✅ | ✅ |
-| `SecurityFilterChain` | — | ✅ | ✅ | ⚠️ needs adding | ✅ | ✅ |
+| `GatewayAuthFilter` | — | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `SecurityFilterChain` | — | ✅ | ✅ | ✅ | ✅ | ✅ |
+| JWT secret aligned | ✅ | ✅ | ✅ | ✅ | ✅ | n/a |
 | Redis cache | ✅ | ❌ | ❌ | ❌ | ✅ (lock only) | — |
-| JWT secret aligned | ✅ | ✅ | ⚠️ mismatch | ⚠️ mismatch | ✅ | n/a |
-| Kafka | — | — | — | Producer + Saga consumer | Consumer + Producer | Consumer (terminal) |
+| Kafka | — | — | — | ✅ Producer + ✅ Saga consumer | ✅ Consumer + ✅ Producer | ✅ Consumer (terminal) |
+| Circuit breaker | — | — | — | ✅ userService + productService | — | — |
+| Dead letter topic | — | — | — | — | — | ✅ order-status-updated.DLT |
+| `userEmail` on Order/Event | — | — | — | ✅ | ✅ (reads from event) | ✅ (reads from event) |
 
 ---
 
 ## ⚠️ Known Issues & Outstanding Work
 
-### 🔴 Critical
-
-1. **JWT secret mismatch** — Product Service and Order Service currently use a different
-   `jwt.secret` than Gateway/User Service. All services must use:
-   ```properties
-   jwt.secret=dGhpc2lzYXZlcnlsb25nc2VjcmV0a2V5Zm9yand0YXV0aGVudGljYXRpb25vbmxpbmVzaG9wcGluZw==
-   ```
-2. **Order Service has no `SecurityFilterChain`** — currently defaults to Basic Auth; needs
-   the same `GatewayAuthFilter` + `SecurityConfig` pattern as Product/Inventory/Notification.
-3. **User Service token blacklist is in-memory** (`ConcurrentHashMap`) — breaks with multiple
-   instances. Must migrate to `RedisTokenBlacklistService`.
-4. **User Service re-parses JWT** in `getUserProfile`/`updateUserProfile` instead of trusting
-   the Gateway's `X-Username` header — violates the centralized-auth architecture (logout is
-   the one correct exception, since it needs the raw token to blacklist it).
-5. **Order Service must be updated** to support Inventory Service's saga: add `userEmail` to
-   `OrderEvent`, add `InventoryFailedEvent`/`OrderStatusEvent` DTOs, add the
-   `InventoryFailedConsumer` Kafka listener (see Inventory Service section).
-6. **Product Service duplicate endpoint** — `POST /products/addproduct` duplicates
-   `POST /products`; remove `saveProduct()`.
-
 ### 🟡 Important
 
-- Gateway → service path mismatches must use `RewritePath` filters (`/api/products/**` →
-  `/products/**`, `/api/orders/**` → `/order/**`) — already applied for Product/Order/Inventory.
-- `UserResponse` field mismatch (`name` vs `username`) between Order Service and User Service.
-- No Redis caching yet on Product/Order Service reads (`@Cacheable` recommended).
-- No circuit breaker (Resilience4j) around Feign calls in Order Service.
-- No dead-letter topic for Notification Service's failed email sends.
-- Feign calls don't currently propagate `X-User-*` headers downstream — add a shared
-  `FeignConfig` `RequestInterceptor`.
+- **`UserResponse` field mismatch** — Order Service's `UserResponse` DTO has a `name` field but User Service returns `username`. The `email` field (needed by the Saga failure path to send failure emails) must also be present in User Service's response; verify before end-to-end testing the failure flow.
+- **No Redis caching on Product/Order reads** — `@Cacheable` recommended for `GET /products/{id}` and `GET /orders/{id}` to reduce DB load under traffic.
+- **Feign calls don't propagate `X-User-*` headers** — add a shared `FeignConfig` `RequestInterceptor` so downstream services receive identity context on inter-service calls.
 
 ### 🟢 Nice to Have
 
@@ -442,10 +533,10 @@ Kafka's at-least-once redelivery never double-decrements stock.
 | Gateway | Spring Cloud Gateway, Netty |
 | Discovery | Netflix Eureka |
 | Auth | JWT (JJWT 0.12.6), Spring Security |
-| REST Clients | OpenFeign |
+| REST Clients | OpenFeign, Resilience4j (Circuit Breaker) |
 | Databases | MySQL 8 (JPA/Hibernate), MongoDB 6 |
 | Cache / Locking / Rate Limit | Redis 7 (Lettuce, Lua scripts, SETNX) |
-| Messaging | Apache Kafka (manual-ack, 3-partition topics) |
+| Messaging | Apache Kafka (manual-ack, 3-partition topics, DLT) |
 | AI *(optional)* | Spring AI, PGVector, OpenAI/Ollama |
 | Build | Maven, Java 21 |
 | Spring Boot / Cloud | 3.2.5 / 2023.0.1 |
