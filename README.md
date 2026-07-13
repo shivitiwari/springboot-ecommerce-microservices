@@ -189,13 +189,6 @@ Client --Bearer JWT--> API Gateway
   fully trusted via forwarded headers (Inventory), or the service is a pure async Kafka
   consumer with no inbound trust decision to make (Notification's Kafka listener).
 
-### Required JWT Claims
-
-```json
-###{ "sub": "john_doe", "userId": "101", "role": "ADMIN", "email": "john@example.com", "iat": ..., "exp": ... }
-```
-
----
 
 ## 🛣️ API Gateway Routing
 
