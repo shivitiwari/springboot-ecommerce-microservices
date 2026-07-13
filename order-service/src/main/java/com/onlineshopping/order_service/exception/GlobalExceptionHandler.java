@@ -31,7 +31,10 @@ public class GlobalExceptionHandler {
                 "message", "Downstream service unavailable: " + e.getMessage()
         ));
     }
+<<<<<<< HEAD
 
+=======
+>>>>>>> 29d677ded1fa643e0e458fdabf4bf9f016596d9d
     @ExceptionHandler(ServiceUnavailableException.class)
     public ResponseEntity<Map<String, Object>> handleServiceUnavailable(ServiceUnavailableException e) {
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(Map.of(

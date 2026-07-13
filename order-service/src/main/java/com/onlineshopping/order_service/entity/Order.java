@@ -19,6 +19,8 @@ public class Order {
     @NotNull
     private Long userId;
     @NotEmpty
+    private String userEmail;
+    @NotEmpty
     private List<OrderItem> items;
     @NotNull
     private Double totalAmount;

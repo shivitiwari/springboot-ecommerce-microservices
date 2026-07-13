@@ -16,6 +16,7 @@ import java.util.List;
 public class OrderResponse {
     private String id;
     private Long userId;
+    private String userEmail;
     private List<OrderItem> items;
     private Double totalAmount;
     private String status; // PENDING, CONFIRMED, DELIVERED
