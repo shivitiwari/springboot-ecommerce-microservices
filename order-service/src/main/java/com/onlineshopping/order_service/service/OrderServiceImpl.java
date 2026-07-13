@@ -30,11 +30,11 @@ public class OrderServiceImpl implements OrderService {
     private final ProductClient productClient;
     private final KafkaProducerService kafkaProducerService;
 
-    public OrderServiceImpl(OrderRepository orderRepository, UserClient userClient, ProductClient productClient, KafkaProducerService kafkaProducerService, KafkaProducerService kafkaProducerService1) {
+    public OrderServiceImpl(OrderRepository orderRepository, UserClient userClient, ProductClient productClient, KafkaProducerService kafkaProducerService) {
         this.orderRepository = orderRepository;
         this.userClient = userClient;
         this.productClient = productClient;
-        this.kafkaProducerService = kafkaProducerService1;
+        this.kafkaProducerService = kafkaProducerService;
     }
     //Circuit breaker for user response
     @CircuitBreaker(name = "userService", fallbackMethod = "userFallback")
@@ -76,6 +76,7 @@ public class OrderServiceImpl implements OrderService {
         }
         Order order = new Order();
         order.setUserId(neworder.getUserId());
+        order.setUserEmail(user.getEmail());
         order.setTotalAmount(totalAmount);
         order.setStatus("PLACED");
         order.setItems(neworder.getItems());

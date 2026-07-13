@@ -20,6 +20,7 @@ public class KafkaProducerService {
         OrderEvent event = new OrderEvent(
                 order.getId(),
                 order.getUserId(),
+                order.getUserEmail(),
                 order.getItems(),
                 order.getTotalAmount(),
                 order.getStatus(),

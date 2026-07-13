@@ -31,4 +31,13 @@ public class GlobalExceptionHandler {
                 "message", "Downstream service unavailable: " + e.getMessage()
         ));
     }
+    @ExceptionHandler(ServiceUnavailableException.class)
+    public ResponseEntity<Map<String, Object>> handleServiceUnavailable(ServiceUnavailableException e) {
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(Map.of(
+                "timestamp", LocalDateTime.now(),
+                "status", 503,
+                "error", "Service Unavailable",
+                "message", e.getMessage()
+        ));
+    }
 }

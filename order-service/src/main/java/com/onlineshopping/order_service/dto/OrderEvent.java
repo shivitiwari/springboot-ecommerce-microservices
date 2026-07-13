@@ -14,6 +14,7 @@ import java.util.List;
 public class OrderEvent {
     private  String orderId;
     private Long userId;
+    private String userEmail;
     private List<OrderItem> items;
     private Double totalAmount;
     private String status;
